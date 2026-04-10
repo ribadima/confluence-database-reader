@@ -2,13 +2,12 @@
 name: confluence-database
 description: "Read data from Confluence Database tables (the standalone database content type in Confluence Cloud, NOT regular page tables). Use when: URL contains /database/, getConfluencePage returns 404, CQL type='database', or user mentions Confluence database/table. Trigger on: 'прочитай таблицу из конфлюенса', 'что в этой базе данных', 'open this confluence table', 'extract data from confluence db', any atlassian.net/database/ URL. Do NOT use for regular Confluence page tables or inline tables — use getConfluencePage for those."
 argument-hint: "[URL таблицы или content ID]"
-allowed-tools: Bash, Read, Write, Grep, Glob
 license: MIT
-compatibility: "Requires Chrome MCP (Control Chrome or Claude in Chrome) for Canvas token auth. Requires Node.js for Yjs decode. Works with any Confluence Cloud instance."
 metadata:
   author: ribadima
-  version: 2.3.0
+  version: 2.4.0
   repository: https://github.com/ribadima/confluence-database-reader
+  compatibility: Requires Chrome MCP for Canvas token auth. Requires Node.js + yjs for decode. Works with any Confluence Cloud instance.
 ---
 
 # Confluence Database Reader
@@ -75,17 +74,17 @@ Run these checks in parallel:
 
 **Chrome MCP:**
 ```
-Call: Control Chrome → get_current_tab
+Call: ControlChrome:get_current_tab
 Pass: returns tab info → "connected"
 Fail: error/timeout → "not connected"
 ```
 
 **Atlassian MCP:**
 ```
-Call: Atlassian MCP → atlassianUserInfo
+Call: Atlassian:atlassianUserInfo
 Pass: returns user info → "connected (user: {name})"
 Fail: error → "not connected"
-Note: MCP tool UUID may change if connector is re-added. Use tool search if UUID is stale.
+Note: MCP server name may vary. Look for tool containing "atlassianUserInfo".
 ```
 
 **Node.js:**
