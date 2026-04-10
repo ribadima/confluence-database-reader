@@ -5,7 +5,7 @@ argument-hint: "[URL таблицы или content ID]"
 license: MIT
 metadata:
   author: ribadima
-  version: 2.4.0
+  version: 3.1.0
   repository: https://github.com/ribadima/confluence-database-reader
   compatibility: Requires Chrome MCP for Canvas token auth. Requires Node.js + yjs for decode. Works with any Confluence Cloud instance.
 ---
@@ -14,214 +14,116 @@ metadata:
 
 Read structured data from Confluence Database objects via Canvas API + Yjs decode.
 
+**Speed target: 3 tool calls for standard URLs, 4 for tiny URLs.**
+
 ## Language Rule
 
 Always respond in the **language of the user's request**.
 - Russian input → Russian response
 - English input → English response
-Keep skill names and slash commands unchanged.
 
 ## Capability Mode
 
 **Triggers:** "what can you do", "что умеешь", "help", "capabilities"
 
-Do NOT launch full workflow. Respond with 4-8 bullets:
+Do NOT launch full workflow. Respond with bullets:
 - Reads Confluence Database tables (the new table-type content, not page tables)
-- Works via Canvas API + Yjs CRDT decode (primary) or DOM scraping (fallback)
+- Works via Canvas API + Yjs CRDT decode
 - Resolves all field types: text, select, hyperlink, person, number, date
 - Resolves user display names via Atlassian API
 - Does NOT write to databases — read-only
 - Does NOT work with regular Confluence page tables — use `getConfluencePage` for those
 
-Example commands:
-- `/confluence-database https://site.atlassian.net/wiki/spaces/XX/database/123456`
-- `/confluence-database 1234567890`
-- `/confluence-database Members · DS`
-
-## Example
-
-**Input:** `/confluence-database https://mysite.atlassian.net/wiki/spaces/TEAM/database/4307910658`
-
-**Output:**
-
-```
-Prerequisites Check:
-✅ Chrome MCP — connected
-✅ Atlassian MCP — connected (user: Jane Smith)
-✅ Node.js — v22.1.0
-✅ yjs — installed
-
-**Members** (view: Team Overview)
-
-| # | Name           | Role                  | Area     |
-|---|----------------|-----------------------|----------|
-| 1 | Alice Johnson  | Design System Owner   | Core Web |
-| 2 | Bob Williams   | Design System Owner   | Core App |
-
-Handoff:
-- Task: Read Confluence Database "Members"
-- Scope: 2 rows × 3 columns extracted
-- Validation: Row count and column names verified
-```
-
 ## Phase 0: Onboarding
 
-Run this check on **first invocation per session**. Skip if `/tmp/.confluence-db-onboarded` exists.
+Skip if `/tmp/.confluence-db-onboarded` exists. Otherwise run checks in parallel:
 
-### Step 0.1 — Check Prerequisites
+- **Chrome MCP:** `ControlChrome:get_current_tab` → connected/not
+- **Atlassian MCP:** `atlassianUserInfo` → connected/not (non-blocking)
+- **Node.js + yjs:** single Bash: `export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" && node -v && node -e "try{require('yjs');console.log('yjs:ok')}catch(e){try{require('/tmp/node_modules/yjs');console.log('yjs:ok')}catch(e2){console.log('yjs:missing')}}" 2>&1`
 
-Run these checks in parallel:
+Auto-fix: yjs missing → `cd /tmp && npm install yjs`. Save flag: `echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > /tmp/.confluence-db-onboarded`
 
-**Chrome MCP:**
-```
-Call: ControlChrome:get_current_tab
-Pass: returns tab info → "connected"
-Fail: error/timeout → "not connected"
-```
+## Phase 1: Parse Input → contentId + site
 
-**Atlassian MCP:**
-```
-Call: Atlassian:atlassianUserInfo
-Pass: returns user info → "connected (user: {name})"
-Fail: error → "not connected"
-Note: MCP server name may vary. Look for tool containing "atlassianUserInfo".
-```
+| Input | How |
+|-------|-----|
+| `https://{site}.atlassian.net/wiki/spaces/{key}/database/{id}` | Parse directly: site + id |
+| `https://{site}.atlassian.net/wiki/x/{tinyId}` | `open_url` → read `window.location.href` from resolved page |
+| Numeric ID | Direct use, resolve site via Atlassian MCP if unknown |
+| Database name | CQL: `type = "database" AND title = "{name}"` |
 
-**Node.js:**
-```bash
-export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" && node -v
-```
+For tiny URLs: open the URL in Chrome, then read `window.location.href` to get the resolved `/database/{id}` URL.
 
-**yjs package:**
-```bash
-export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" && node -e "try{require('yjs');console.log('ok')}catch(e){try{require('/tmp/node_modules/yjs');console.log('ok')}catch(e2){console.log('missing')}}" 2>&1
-```
+## Phase 2: Metadata + Token (ONE Chrome call)
 
-### Step 0.2 — Display Status
+Combine metadata fetch and canvas token into a **single** `execute_javascript` call using `Promise.all`:
 
-Output a status table:
-
-```
-Prerequisites Check:
-✅ Chrome MCP — connected
-✅ Atlassian MCP — connected (user: Dmitry Rybalka)
-✅ Node.js — v25.6.1
-✅ yjs — installed
-```
-
-### Step 0.3 — Auto-fix Issues
-
-- **yjs missing:** Auto-install: `cd /tmp && npm install yjs`
-- **Chrome MCP missing:** Tell user: "Chrome MCP is required for Canvas token. Open Chrome with MCP extension."
-- **Atlassian MCP missing:** Non-blocking warning: "User name resolution will return account IDs instead of names."
-- **Node.js missing:** Blocking error: "Node.js is required for Yjs decode. Install via: brew install node"
-
-### Step 0.4 — Save Onboarding Flag
-
-If all blocking prerequisites pass:
-```bash
-echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > /tmp/.confluence-db-onboarded
+```javascript
+(async () => {
+  const cid = '{CONTENT_ID}';
+  const [meta, tok] = await Promise.all([
+    fetch('/wiki/rest/api/content/' + cid, {credentials:'include'}).then(r => r.json()),
+    fetch('/gateway/api/graphql', {
+      method: 'POST', credentials: 'include',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        operationName: 'GetCanvasToken',
+        query: 'query GetCanvasToken { canvasToken(contentId: "' + cid + '") { token expiryDateTime } }'
+      })
+    }).then(r => r.json())
+  ]);
+  const cloudId = document.querySelector('meta[name="ajs-cloud-id"]')?.content || '';
+  document.title = JSON.stringify({
+    token: tok.data.canvasToken.token, site: '{SITE}', cloudId: cloudId,
+    referenceId: meta.referenceId, contentId: cid, title: meta.title
+  });
+})();
 ```
 
-## Phase 1: Parse Input
+Then read result: `document.title` → parse JSON → extract token, site, cloudId, referenceId, contentId, title.
 
-Extract `contentId` and `site` from user input:
+**Important:** Chrome must be on the target Confluence domain. If Chrome is on a different domain, first `open_url` to any page on `{site}.atlassian.net/wiki/` so relative fetches work.
 
-| Input Format | Extraction |
-| --- | --- |
-| `https://{site}.atlassian.net/wiki/spaces/{key}/database/{id}` | `site` and `{id}` from URL |
-| `https://{site}.atlassian.net/wiki/x/{tinyId}` | `site` from URL, resolve ID via CQL |
-| Numeric ID (e.g. `1234567890`) | Direct use, ask user for site if unknown |
-| Database name (e.g. "Members · DS") | Search via CQL: `type = "database" AND title = "{name}"` |
+**Important:** The `document.title` JSON must include all fields needed for Phase 3: `token`, `site`, `cloudId`, `referenceId`, `contentId`, `title`.
 
-If `site` is not provided, resolve via Atlassian MCP `getAccessibleAtlassianResources`.
+## Phase 3: Fetch + Decode (ONE Bash call)
 
-**CQL search via MCP:**
-```
-Tool: Atlassian MCP → searchConfluenceUsingCql
-Input: { cloudId: "{site}.atlassian.net", cql: "type = \"database\" AND space = \"{spaceKey}\"" }
-```
-
-## Phase 2: Get Metadata
-
-Get `referenceId` and `cloudId` dynamically via Chrome MCP:
-
-```
-Tool: Control Chrome → execute_javascript
-Code:
-  fetch('/wiki/rest/api/content/{contentId}', {credentials:'include'})
-  .then(r => r.json())
-  .then(d => {
-    var cloudId = document.querySelector('meta[name="ajs-cloud-id"]')?.content || '';
-    return JSON.stringify({title: d.title, referenceId: d.referenceId, cloudId: cloudId});
-  })
-```
-
-**Important:** `cloudId` is extracted from the page's meta tag — NOT hardcoded. Chrome must be on the target Confluence domain for relative URLs to work.
-
-Extract: `title`, `referenceId`, `cloudId`.
-
-## Phase 3: Get Canvas Token
-
-```
-Tool: Control Chrome → execute_javascript
-Code:
-  fetch('/gateway/api/graphql', {
-    method: 'POST', credentials: 'include',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({
-      operationName: 'GetCanvasToken',
-      query: 'query GetCanvasToken { canvasToken(contentId: "{contentId}") { token expiryDateTime } }'
-    })
-  }).then(r => r.json()).then(d => d.data.canvasToken.token)
-```
-
-Save the token — it's valid for ~15 minutes.
-
-## Phase 4: Fetch + Decode
-
-**Fetch (headless via Bash):**
-
-The site URL and cloudId come from Phase 1 and Phase 2 — never hardcode them.
+Save the `document.title` JSON to a temp file, then pass it to `fetch-decode.js`:
 
 ```bash
+cat << 'EOF' > /tmp/cfdb_params.json
+{DOCUMENT_TITLE_JSON}
+EOF
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
-curl -s \
-  -H "X-Access-Token: {TOKEN}" \
-  "https://{SITE}.atlassian.net/gateway/api/canvas/api/_internal/collab/ari%3Acloud%3Acanvas%3A{CLOUD_ID}%3Adatabase%2F{REFERENCE_ID}?skipSteps=true&v=2" \
-  -o /tmp/cfdb_{CONTENT_ID}.bin
+node ~/.claude/skills/confluence-database/scripts/fetch-decode.js /tmp/cfdb_params.json
 ```
 
-**Decode (headless via bundled script):**
+**Why a file?** JWT tokens are ~1400 chars and get corrupted when passed as CLI arguments due to shell escaping. The JSON file approach is reliable.
 
-Use the bundled decoder script instead of inline JS — it handles all field types, error logging, and account ID collection:
+Output: JSON with `view`, `columns`, `rows`, `rowCount`, `accountIdsToResolve`.
 
-```bash
-export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
-node ~/.claude/skills/confluence-database/scripts/decode.js /tmp/cfdb_{CONTENT_ID}.bin
+## Phase 4: Resolve User Names (ONE Chrome call, only if needed)
+
+Skip if `accountIdsToResolve` is empty.
+
+Batch ALL account IDs in a single `execute_javascript`:
+
+```javascript
+(async () => {
+  const ids = ['{ID1}', '{ID2}'];
+  const results = await Promise.all(ids.map(id =>
+    fetch('/wiki/rest/api/user?accountId=' + id, {credentials:'include'})
+    .then(r => r.json()).then(d => ({id, name: d.displayName}))
+    .catch(() => ({id, name: id}))
+  ));
+  document.title = JSON.stringify(results);
+})();
 ```
 
-The script outputs JSON with `columns`, `rows`, `rowCount`, `view`, and `accountIdsToResolve`. Read `references/yjs-schema.md` for field type details if needed.
+Read `document.title` → replace account IDs with display names in rows.
 
-## Phase 5: Resolve User Names
-
-If `accountIdsToResolve` is non-empty, resolve display names via Chrome MCP:
-
-```
-Tool: Control Chrome → execute_javascript
-Code:
-  fetch('/wiki/rest/api/user?accountId={accountId}', {credentials:'include'})
-  .then(r => r.json())
-  .then(d => d.displayName)
-```
-
-Batch all unique account IDs. If Atlassian MCP is available, `lookupJiraAccountId` can also be used as a fallback (search by account ID string).
-
-Replace account IDs in rows with display names.
-
-## Phase 6: Output
-
-Format as a markdown table for the user:
+## Phase 5: Output
 
 ```markdown
 **{title}** (view: {viewName})
@@ -229,38 +131,39 @@ Format as a markdown table for the user:
 | # | Col1 | Col2 | Col3 |
 |---|------|------|------|
 | 1 | val  | val  | val  |
-| 2 | val  | val  | val  |
 ```
+
+## Call Summary
+
+| Scenario | Tool calls |
+|----------|-----------|
+| Standard URL, no users | 2: Chrome(meta+token) → Bash(fetch+decode) |
+| Standard URL, with users | 3: Chrome(meta+token) → Bash(fetch+decode) → Chrome(resolve users) |
+| Tiny URL, no users | 3: Chrome(open+resolve URL) → Chrome(meta+token) → Bash(fetch+decode) |
+| Tiny URL, with users | 4: Chrome(open) → Chrome(meta+token) → Bash(fetch+decode) → Chrome(users) |
 
 ## Error Recovery
 
 | Error | Action |
-| --- | --- |
-| Canvas 401 | Token expired — re-run Phase 3 |
-| REST 404 | Not a database — check content type via CQL |
-| Yjs decode fails | Verify binary file, not JSON error |
-| Chrome MCP unavailable | Cannot proceed — tell user to connect Chrome |
-| Empty rows/columns | Database may be empty — confirm with user |
-| Unknown field type | Log warning, return raw value |
-| Skill doesn't trigger | Ask Claude: "When would you use the confluence-database skill?" — adjust description if needed |
+|-------|--------|
+| Canvas 401 | Token expired — re-run Phase 2 |
+| REST 404 | Not a database — check via CQL |
+| Yjs decode fails | Verify binary, not JSON error page |
+| Chrome not on Confluence | `open_url` to target site first |
+| Empty rows | Database may be empty — confirm with user |
 
-## Anti-Hallucination Baseline
+## Anti-Hallucination
 
-1. Never invent APIs, endpoints, or field types not documented in `references/yjs-schema.md`.
-2. Verify data by comparing row count and column names after decode.
-3. If Yjs schema changes (new field types), warn user and return raw values.
-4. Do not guess user display names — always resolve via API.
-5. Do not execute destructive actions without explicit user confirmation.
+1. Never invent APIs not in `references/yjs-schema.md`
+2. Always resolve user names via API, never guess
+3. Return raw values for unknown field types
 
 ## Handoff Contract
 
 ```
 Handoff:
 - Task: Read Confluence Database "{title}"
-- Scope: {rowCount} rows × {columnCount} columns extracted
-- Artifacts: /tmp/cfdb_{contentId}.bin (Yjs binary), parsed JSON
-- Decisions: Method A (API Pipeline) used
-- Validation: Row count and column names verified against metadata
+- Scope: {rowCount} rows × {columnCount} columns
+- Validation: Row count and column names verified
 - Risks: Canvas token expires in ~15 min
-- Next command: N/A
 ```
