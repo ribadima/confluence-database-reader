@@ -1,6 +1,6 @@
 ---
 name: confluence-database
-description: "Read data from Confluence Database tables (the standalone database content type, NOT regular page tables). Use when: URL contains /database/, getConfluencePage returns 404, CQL returns type='database', or user asks to read a Confluence database/table. Handles onboarding: checks Chrome MCP, Atlassian MCP, Node.js + yjs. Используй когда: ссылка содержит /database/, getConfluencePage возвращает 404, пользователь просит прочитать таблицу/database из Confluence."
+description: "Read data from Confluence Database tables (the standalone database content type in Confluence Cloud, NOT regular page tables). Use this skill when: URL contains /database/, getConfluencePage returns 404 for a content ID, CQL returns type='database', or user mentions reading a Confluence database or table. Also trigger when user says 'прочитай таблицу из конфлюенса', 'что в этой базе данных', 'покажи данные из confluence database', 'open this confluence table', 'extract data from confluence db', or provides any atlassian.net URL with /database/ in the path. If getConfluencePage fails with 404 and the content type is database — this is the skill to use, not a bug."
 argument-hint: "[URL таблицы или content ID]"
 allowed-tools: Bash, Read, Write, Grep, Glob
 ---
@@ -32,6 +32,32 @@ Example commands:
 - `/confluence-database https://site.atlassian.net/wiki/spaces/XX/database/123456`
 - `/confluence-database 1234567890`
 - `/confluence-database Members · DS`
+
+## Example
+
+**Input:** `/confluence-database https://mysite.atlassian.net/wiki/spaces/TEAM/database/4307910658`
+
+**Output:**
+
+```
+Prerequisites Check:
+✅ Chrome MCP — connected
+✅ Atlassian MCP — connected (user: Jane Smith)
+✅ Node.js — v22.1.0
+✅ yjs — installed
+
+**Members** (view: Team Overview)
+
+| # | Name           | Role                  | Area     |
+|---|----------------|-----------------------|----------|
+| 1 | Alice Johnson  | Design System Owner   | Core Web |
+| 2 | Bob Williams   | Design System Owner   | Core App |
+
+Handoff:
+- Task: Read Confluence Database "Members"
+- Scope: 2 rows × 3 columns extracted
+- Validation: Row count and column names verified
+```
 
 ## Phase 0: Onboarding
 
@@ -151,7 +177,7 @@ Save the token — it's valid for ~15 minutes.
 
 **Fetch (headless via Bash):**
 
-The site URL and cloudId are derived from Phase 1 and Phase 2 — never hardcoded.
+The site URL and cloudId come from Phase 1 and Phase 2 — never hardcode them.
 
 ```bash
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
@@ -161,55 +187,16 @@ curl -s \
   -o /tmp/cfdb_{CONTENT_ID}.bin
 ```
 
-**Decode (headless via Bash + Node.js):**
+**Decode (headless via bundled script):**
+
+Use the bundled decoder script instead of inline JS — it handles all field types, error logging, and account ID collection:
 
 ```bash
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
-node -e "
-const Y = require('/tmp/node_modules/yjs');
-const fs = require('fs');
-const data = fs.readFileSync('/tmp/cfdb_{CONTENT_ID}.bin');
-const doc = new Y.Doc();
-Y.applyUpdate(doc, new Uint8Array(data));
-const fbi = doc.getMap('fbi').toJSON();
-const ebi = doc.getMap('ebi').toJSON();
-const vbi = doc.getMap('vbi').toJSON();
-
-function resolveCell(colDef, cell) {
-  if (!cell || cell.v === undefined) return '';
-  switch (cell.t) {
-    case 't': return cell.v || '';
-    case 's': return Array.isArray(cell.v) ? cell.v.map(id => (colDef.sso||[]).find(o=>o.i===id)?.l||id).join(', ') : cell.v;
-    case 'h': return Array.isArray(cell.v) ? cell.v.map(l => (colDef.sso||[]).find(o=>o.i===l.i)?.l||(l.u||l.i)).join(', ') : cell.v;
-    case 'u': return Array.isArray(cell.v) ? cell.v.map(u => u.a||u.i||'').join(', ') : cell.v;
-    case 'n': return cell.v;
-    case 'd': return cell.v;
-    default:
-      process.stderr.write('WARN: unknown field type ' + cell.t + ' in column ' + (colDef?.n||'?') + '\n');
-      return typeof cell.v === 'object' ? JSON.stringify(cell.v) : (cell.v ?? '');
-  }
-}
-
-const columns = Object.entries(fbi).map(([id,c])=>({id,name:c.n,type:c.t}));
-const rows = Object.entries(ebi).map(([rid,cells])=>{
-  const row = {};
-  for (const [cid,cell] of Object.entries(cells)) {
-    row[fbi[cid]?.n||cid] = resolveCell(fbi[cid], cell);
-  }
-  return row;
-});
-const aids = new Set();
-for (const r of Object.values(ebi)) for (const c of Object.values(r)) if (c.t==='u'&&Array.isArray(c.v)) c.v.forEach(u=>{if(u.a)aids.add(u.a)});
-
-console.log(JSON.stringify({
-  view: Object.values(vbi)[0]?.n||'',
-  columns: columns.map(c=>({name:c.name,type:c.type})),
-  rowCount: rows.length,
-  rows,
-  accountIdsToResolve: [...aids]
-}));
-"
+node ~/.claude/skills/confluence-database/scripts/decode.js /tmp/cfdb_{CONTENT_ID}.bin
 ```
+
+The script outputs JSON with `columns`, `rows`, `rowCount`, `view`, and `accountIdsToResolve`. Read `references/yjs-schema.md` for field type details if needed.
 
 ## Phase 5: Resolve User Names
 
