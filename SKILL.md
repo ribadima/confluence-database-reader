@@ -1,8 +1,14 @@
 ---
 name: confluence-database
-description: "Read data from Confluence Database tables (the standalone database content type in Confluence Cloud, NOT regular page tables). Use this skill when: URL contains /database/, getConfluencePage returns 404 for a content ID, CQL returns type='database', or user mentions reading a Confluence database or table. Also trigger when user says 'прочитай таблицу из конфлюенса', 'что в этой базе данных', 'покажи данные из confluence database', 'open this confluence table', 'extract data from confluence db', or provides any atlassian.net URL with /database/ in the path. If getConfluencePage fails with 404 and the content type is database — this is the skill to use, not a bug."
+description: "Read data from Confluence Database tables (the standalone database content type in Confluence Cloud, NOT regular page tables). Use when: URL contains /database/, getConfluencePage returns 404, CQL type='database', or user mentions Confluence database/table. Trigger on: 'прочитай таблицу из конфлюенса', 'что в этой базе данных', 'open this confluence table', 'extract data from confluence db', any atlassian.net/database/ URL. Do NOT use for regular Confluence page tables or inline tables — use getConfluencePage for those."
 argument-hint: "[URL таблицы или content ID]"
 allowed-tools: Bash, Read, Write, Grep, Glob
+license: MIT
+compatibility: "Requires Chrome MCP (Control Chrome or Claude in Chrome) for Canvas token auth. Requires Node.js for Yjs decode. Works with any Confluence Cloud instance."
+metadata:
+  author: ribadima
+  version: 2.3.0
+  repository: https://github.com/ribadima/confluence-database-reader
 ---
 
 # Confluence Database Reader
@@ -237,6 +243,7 @@ Format as a markdown table for the user:
 | Chrome MCP unavailable | Cannot proceed — tell user to connect Chrome |
 | Empty rows/columns | Database may be empty — confirm with user |
 | Unknown field type | Log warning, return raw value |
+| Skill doesn't trigger | Ask Claude: "When would you use the confluence-database skill?" — adjust description if needed |
 
 ## Anti-Hallucination Baseline
 
