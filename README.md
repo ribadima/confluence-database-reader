@@ -2,9 +2,26 @@
 
 Claude Code skill for reading Confluence Database tables via Canvas API + Yjs CRDT decode.
 
+## What is a Confluence Database?
+
+**Confluence Database** is a standalone content type in Confluence Cloud (GA since August 2024) — a structured table with typed columns, filters, views, and sorting. It is **not** a regular table inside a Confluence page.
+
+How to tell the difference:
+
+| | Confluence Database | Regular page table |
+|---|---|---|
+| URL | `/wiki/spaces/XX/database/123456` | `/wiki/spaces/XX/pages/123456` |
+| CQL type | `type = "database"` | `type = "page"` |
+| `getConfluencePage` | Returns **404** | Returns page content |
+| Created via | "+" → "Database" in space sidebar | Insert table inside a page editor |
+| Has views/filters | Yes (built-in) | No |
+| Column types | Text, Select, Person, Date, Number, Page Link | Plain text only |
+
+**This skill reads Confluence Databases.** For regular page tables, use `getConfluencePage` with `body.storage` — no special skill needed.
+
 ## Problem
 
-Confluence Databases (the new table-type content) have **no REST API for reading row data** ([CONFCLOUD-77328](https://jira.atlassian.com/browse/CONFCLOUD-77328)). The standard `getConfluencePage` returns 404 for database content.
+Confluence Databases have **no REST API for reading row data** ([CONFCLOUD-77328](https://jira.atlassian.com/browse/CONFCLOUD-77328)). The standard `getConfluencePage` returns 404 for database content.
 
 ## Solution
 

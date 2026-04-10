@@ -1,6 +1,6 @@
 ---
 name: confluence-database
-description: "Read data from Confluence Database tables. Use when user asks to read a Confluence database, table, or URL matches /database/. Handles onboarding: checks Chrome MCP, Atlassian MCP, Node.js + yjs prerequisites. Используй когда пользователь просит прочитать таблицу из Confluence, Confluence database, или даёт ссылку на /database/."
+description: "Read data from Confluence Database tables (the standalone database content type, NOT regular page tables). Use when: URL contains /database/, getConfluencePage returns 404, CQL returns type='database', or user asks to read a Confluence database/table. Handles onboarding: checks Chrome MCP, Atlassian MCP, Node.js + yjs. Используй когда: ссылка содержит /database/, getConfluencePage возвращает 404, пользователь просит прочитать таблицу/database из Confluence."
 argument-hint: "[URL таблицы или content ID]"
 allowed-tools: Bash, Read, Write, Grep, Glob
 ---
