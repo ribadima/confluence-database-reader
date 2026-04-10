@@ -5,22 +5,18 @@ argument-hint: "[URL таблицы или content ID]"
 license: MIT
 metadata:
   author: ribadima
-  version: 3.1.0
+  version: 4.0.0
   repository: https://github.com/ribadima/confluence-database-reader
-  compatibility: Requires Chrome MCP for Canvas token auth. Requires Node.js + yjs for decode. Works with any Confluence Cloud instance.
+  compatibility: Requires Chrome MCP only. No Node.js, no npm packages. Yjs loaded from CDN at runtime. Works with any Confluence Cloud instance.
 ---
 
 # Confluence Database Reader
 
-Read structured data from Confluence Database objects via Canvas API + Yjs decode.
-
-**Speed target: 3 tool calls for standard URLs, 4 for tiny URLs.**
+Read Confluence Database tables via Canvas API + Yjs decode. Everything runs in Chrome — no external dependencies.
 
 ## Language Rule
 
 Always respond in the **language of the user's request**.
-- Russian input → Russian response
-- English input → English response
 
 ## Capability Mode
 
@@ -28,102 +24,129 @@ Always respond in the **language of the user's request**.
 
 Do NOT launch full workflow. Respond with bullets:
 - Reads Confluence Database tables (the new table-type content, not page tables)
-- Works via Canvas API + Yjs CRDT decode
+- Everything runs in Chrome — no Node.js, no npm, no temp files
 - Resolves all field types: text, select, hyperlink, person, number, date
-- Resolves user display names via Atlassian API
-- Does NOT write to databases — read-only
-- Does NOT work with regular Confluence page tables — use `getConfluencePage` for those
+- Resolves user display names automatically
+- Read-only — does NOT write to databases
 
 ## Phase 0: Onboarding
 
-Skip if `/tmp/.confluence-db-onboarded` exists. Otherwise run checks in parallel:
+Skip if `/tmp/.confluence-db-onboarded` exists. Otherwise check:
 
-- **Chrome MCP:** `ControlChrome:get_current_tab` → connected/not
-- **Atlassian MCP:** `atlassianUserInfo` → connected/not (non-blocking)
-- **Node.js + yjs:** single Bash: `export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" && node -v && node -e "try{require('yjs');console.log('yjs:ok')}catch(e){try{require('/tmp/node_modules/yjs');console.log('yjs:ok')}catch(e2){console.log('yjs:missing')}}" 2>&1`
+- **Chrome MCP:** `ControlChrome:get_current_tab` → must be connected
+- **Atlassian MCP:** `atlassianUserInfo` → non-blocking, for fallback user resolution
 
-Auto-fix: yjs missing → `cd /tmp && npm install yjs`. Save flag: `echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > /tmp/.confluence-db-onboarded`
+Save flag: `echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > /tmp/.confluence-db-onboarded`
+
+No Node.js or yjs installation needed — Yjs loads from CDN inside Chrome.
 
 ## Phase 1: Parse Input → contentId + site
 
 | Input | How |
 |-------|-----|
-| `https://{site}.atlassian.net/wiki/spaces/{key}/database/{id}` | Parse directly: site + id |
-| `https://{site}.atlassian.net/wiki/x/{tinyId}` | `open_url` → read `window.location.href` from resolved page |
-| Numeric ID | Direct use, resolve site via Atlassian MCP if unknown |
+| `https://{site}.atlassian.net/wiki/spaces/{key}/database/{id}` | Parse directly |
+| `https://{site}.atlassian.net/wiki/x/{tinyId}` | `open_url` → read `window.location.href` |
+| Numeric ID | Direct use, resolve site via Atlassian MCP |
 | Database name | CQL: `type = "database" AND title = "{name}"` |
 
-For tiny URLs: open the URL in Chrome, then read `window.location.href` to get the resolved `/database/{id}` URL.
+**Important:** Chrome must be on the target Confluence domain for relative fetches to work. If not, first `open_url` to `https://{site}.atlassian.net/wiki/`.
 
-## Phase 2: Metadata + Token (ONE Chrome call)
+## Phase 2: Read Database (ONE Chrome call)
 
-Combine metadata fetch and canvas token into a **single** `execute_javascript` call using `Promise.all`:
+Single `execute_javascript` that does everything: REST metadata → GraphQL canvasToken → Canvas binary fetch → Yjs decode from CDN → user name resolution → JSON result.
 
 ```javascript
 (async () => {
   const cid = '{CONTENT_ID}';
+
+  // Step 1: Metadata + Token (parallel)
   const [meta, tok] = await Promise.all([
     fetch('/wiki/rest/api/content/' + cid, {credentials:'include'}).then(r => r.json()),
     fetch('/gateway/api/graphql', {
       method: 'POST', credentials: 'include',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        operationName: 'GetCanvasToken',
-        query: 'query GetCanvasToken { canvasToken(contentId: "' + cid + '") { token expiryDateTime } }'
-      })
+      body: JSON.stringify({operationName:'GetCanvasToken',
+        query:'query GetCanvasToken{canvasToken(contentId:"'+cid+'"){token}}'})
     }).then(r => r.json())
   ]);
-  const cloudId = document.querySelector('meta[name="ajs-cloud-id"]')?.content || '';
+  const cloudId = document.querySelector('meta[name="ajs-cloud-id"]')?.content;
+  const token = tok.data.canvasToken.token;
+
+  // Step 2: Fetch Canvas binary
+  const ari = encodeURIComponent('ari:cloud:canvas:' + cloudId + ':database/' + meta.referenceId);
+  const bin = await fetch('/gateway/api/canvas/api/_internal/collab/' + ari + '?skipSteps=true&v=2', {
+    credentials: 'include', headers: {'X-Access-Token': token}
+  }).then(r => r.arrayBuffer());
+
+  // Step 3: Load Yjs from CDN + decode
+  const Y = await import('https://cdn.jsdelivr.net/npm/yjs@13.6.24/+esm');
+  const doc = new Y.Doc();
+  Y.applyUpdate(doc, new Uint8Array(bin));
+  const fbi = doc.getMap('fbi').toJSON();
+  const ebi = doc.getMap('ebi').toJSON();
+  const vbi = doc.getMap('vbi').toJSON();
+
+  // Step 4: Build rows
+  const columns = Object.entries(fbi).map(([id, c]) => ({id, name: c.n, type: c.t}));
+  const rows = Object.entries(ebi).map(([, cells]) => {
+    const row = {};
+    for (const [k, cell] of Object.entries(cells)) {
+      const col = fbi[k];
+      if (!cell || cell.v === undefined) { row[col?.n || k] = ''; continue; }
+      if (cell.t === 't') row[col?.n || k] = cell.v || '';
+      else if (cell.t === 's') row[col?.n || k] = Array.isArray(cell.v)
+        ? cell.v.map(id => (col.sso || []).find(o => o.i === id)?.l || id).join(', ') : cell.v;
+      else if (cell.t === 'u') row[col?.n || k] = Array.isArray(cell.v)
+        ? cell.v.map(u => u.a || '').join(', ') : cell.v;
+      else if (cell.t === 'h') row[col?.n || k] = Array.isArray(cell.v)
+        ? cell.v.map(l => (col.sso || []).find(o => o.i === l.i)?.l || (l.u || l.i)).join(', ') : cell.v;
+      else row[col?.n || k] = cell.v;
+    }
+    return row;
+  });
+
+  // Step 5: Resolve user names
+  const aids = new Set();
+  for (const r of Object.values(ebi))
+    for (const c of Object.values(r))
+      if (c.t === 'u' && Array.isArray(c.v)) c.v.forEach(u => { if (u.a) aids.add(u.a); });
+
+  if (aids.size > 0) {
+    const users = await Promise.all([...aids].map(id =>
+      fetch('/wiki/rest/api/user?accountId=' + id, {credentials:'include'})
+      .then(r => r.json()).then(d => ({id, name: d.displayName}))
+      .catch(() => ({id, name: id}))
+    ));
+    const um = Object.fromEntries(users.map(u => [u.id, u.name]));
+    for (const row of rows) for (const [k, v] of Object.entries(row)) if (um[v]) row[k] = um[v];
+  }
+
   document.title = JSON.stringify({
-    token: tok.data.canvasToken.token, site: '{SITE}', cloudId: cloudId,
-    referenceId: meta.referenceId, contentId: cid, title: meta.title
+    title: meta.title,
+    view: Object.values(vbi)[0]?.n || '',
+    columns: columns.map(c => ({name: c.name, type: c.type})),
+    rowCount: rows.length,
+    rows
   });
 })();
 ```
 
-Then read result: `document.title` → parse JSON → extract token, site, cloudId, referenceId, contentId, title.
-
-**Important:** Chrome must be on the target Confluence domain. If Chrome is on a different domain, first `open_url` to any page on `{site}.atlassian.net/wiki/` so relative fetches work.
-
-**Important:** The `document.title` JSON must include all fields needed for Phase 3: `token`, `site`, `cloudId`, `referenceId`, `contentId`, `title`.
-
-## Phase 3: Fetch + Decode (ONE Bash call)
-
-Save the `document.title` JSON to a temp file, then pass it to `fetch-decode.js`:
-
-```bash
-cat << 'EOF' > /tmp/cfdb_params.json
-{DOCUMENT_TITLE_JSON}
-EOF
-export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
-node ~/.claude/skills/confluence-database/scripts/fetch-decode.js /tmp/cfdb_params.json
-```
-
-**Why a file?** JWT tokens are ~1400 chars and get corrupted when passed as CLI arguments due to shell escaping. The JSON file approach is reliable.
-
-Output: JSON with `view`, `columns`, `rows`, `rowCount`, `accountIdsToResolve`.
-
-## Phase 4: Resolve User Names (ONE Chrome call, only if needed)
-
-Skip if `accountIdsToResolve` is empty.
-
-Batch ALL account IDs in a single `execute_javascript`:
+## Phase 3: Read Result (ONE Chrome call)
 
 ```javascript
-(async () => {
-  const ids = ['{ID1}', '{ID2}'];
-  const results = await Promise.all(ids.map(id =>
-    fetch('/wiki/rest/api/user?accountId=' + id, {credentials:'include'})
-    .then(r => r.json()).then(d => ({id, name: d.displayName}))
-    .catch(() => ({id, name: id}))
-  ));
-  document.title = JSON.stringify(results);
-})();
+document.title
 ```
 
-Read `document.title` → replace account IDs with display names in rows.
+Parse JSON → output as markdown table.
 
-## Phase 5: Output
+## Call Summary
+
+| Scenario | Tool calls |
+|----------|-----------|
+| Standard URL | **2**: Chrome(execute all) → Chrome(read title) |
+| Tiny URL | **3**: Chrome(open_url) → Chrome(execute all) → Chrome(read title) |
+
+## Output Format
 
 ```markdown
 **{title}** (view: {viewName})
@@ -133,22 +156,13 @@ Read `document.title` → replace account IDs with display names in rows.
 | 1 | val  | val  | val  |
 ```
 
-## Call Summary
-
-| Scenario | Tool calls |
-|----------|-----------|
-| Standard URL, no users | 2: Chrome(meta+token) → Bash(fetch+decode) |
-| Standard URL, with users | 3: Chrome(meta+token) → Bash(fetch+decode) → Chrome(resolve users) |
-| Tiny URL, no users | 3: Chrome(open+resolve URL) → Chrome(meta+token) → Bash(fetch+decode) |
-| Tiny URL, with users | 4: Chrome(open) → Chrome(meta+token) → Bash(fetch+decode) → Chrome(users) |
-
 ## Error Recovery
 
 | Error | Action |
 |-------|--------|
 | Canvas 401 | Token expired — re-run Phase 2 |
 | REST 404 | Not a database — check via CQL |
-| Yjs decode fails | Verify binary, not JSON error page |
+| Yjs CDN fails | Retry or try alternate CDN: `https://unpkg.com/yjs@13.6.24/+esm` |
 | Chrome not on Confluence | `open_url` to target site first |
 | Empty rows | Database may be empty — confirm with user |
 
@@ -157,13 +171,3 @@ Read `document.title` → replace account IDs with display names in rows.
 1. Never invent APIs not in `references/yjs-schema.md`
 2. Always resolve user names via API, never guess
 3. Return raw values for unknown field types
-
-## Handoff Contract
-
-```
-Handoff:
-- Task: Read Confluence Database "{title}"
-- Scope: {rowCount} rows × {columnCount} columns
-- Validation: Row count and column names verified
-- Risks: Canvas token expires in ~15 min
-```
