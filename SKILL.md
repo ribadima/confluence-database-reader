@@ -12,18 +12,26 @@ Read structured data from Confluence Database objects via Canvas API + Yjs decod
 ## Language Rule
 
 Always respond in the **language of the user's request**.
+- Russian input → Russian response
+- English input → English response
+Keep skill names and slash commands unchanged.
 
 ## Capability Mode
 
 **Triggers:** "what can you do", "что умеешь", "help", "capabilities"
 
-Respond with:
+Do NOT launch full workflow. Respond with 4-8 bullets:
 - Reads Confluence Database tables (the new table-type content, not page tables)
 - Works via Canvas API + Yjs CRDT decode (primary) or DOM scraping (fallback)
 - Resolves all field types: text, select, hyperlink, person, number, date
 - Resolves user display names via Atlassian API
 - Does NOT write to databases — read-only
 - Does NOT work with regular Confluence page tables — use `getConfluencePage` for those
+
+Example commands:
+- `/confluence-database https://site.atlassian.net/wiki/spaces/XX/database/123456`
+- `/confluence-database 4307910658`
+- `/confluence-database Members · DS`
 
 ## Phase 0: Onboarding
 
@@ -35,16 +43,17 @@ Run these checks in parallel:
 
 **Chrome MCP:**
 ```
-Call: mcp__Control_Chrome__get_current_tab
+Call: Control Chrome → get_current_tab
 Pass: returns tab info → "connected"
 Fail: error/timeout → "not connected"
 ```
 
 **Atlassian MCP:**
 ```
-Call: mcp__21ec6106-62e6-4608-a1ee-654b1367a5c1__atlassianUserInfo
+Call: Atlassian MCP → atlassianUserInfo
 Pass: returns user info → "connected (user: {name})"
 Fail: error → "not connected"
+Note: MCP tool UUID may change if connector is re-added. Use tool search if UUID is stale.
 ```
 
 **Node.js:**
@@ -54,7 +63,7 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" && node -v
 
 **yjs package:**
 ```bash
-export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" && node -e "require('/tmp/node_modules/yjs'); console.log('ok')" 2>&1
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" && node -e "try{require('yjs');console.log('ok')}catch(e){try{require('/tmp/node_modules/yjs');console.log('ok')}catch(e2){console.log('missing')}}" 2>&1
 ```
 
 ### Step 0.2 — Display Status
@@ -85,36 +94,41 @@ echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > /tmp/.confluence-db-onboarded
 
 ## Phase 1: Parse Input
 
-Extract `contentId` from user input:
+Extract `contentId` and `site` from user input:
 
 | Input Format | Extraction |
 | --- | --- |
-| `https://{site}.atlassian.net/wiki/spaces/{key}/database/{id}` | `{id}` |
-| `https://{site}.atlassian.net/wiki/x/{tinyId}` | Resolve via CQL search |
-| Numeric ID (e.g. `4307976195`) | Direct use |
+| `https://{site}.atlassian.net/wiki/spaces/{key}/database/{id}` | `site` and `{id}` from URL |
+| `https://{site}.atlassian.net/wiki/x/{tinyId}` | `site` from URL, resolve ID via CQL |
+| Numeric ID (e.g. `4307976195`) | Direct use, ask user for site if unknown |
 | Database name (e.g. "Members · DS") | Search via CQL: `type = "database" AND title = "{name}"` |
+
+If `site` is not provided, resolve via Atlassian MCP `getAccessibleAtlassianResources`.
 
 **CQL search via MCP:**
 ```
-Tool: searchConfluenceUsingCql
+Tool: Atlassian MCP → searchConfluenceUsingCql
 Input: { cloudId: "{site}.atlassian.net", cql: "type = \"database\" AND space = \"{spaceKey}\"" }
 ```
 
 ## Phase 2: Get Metadata
 
-Get `referenceId` via Chrome MCP (REST API v1 requires session cookies):
+Get `referenceId` and `cloudId` dynamically via Chrome MCP:
 
 ```
 Tool: Control Chrome → execute_javascript
 Code:
   fetch('/wiki/rest/api/content/{contentId}', {credentials:'include'})
   .then(r => r.json())
-  .then(d => JSON.stringify({title: d.title, referenceId: d.referenceId, cloudId: '129eb80d-7ac7-4c64-8246-d7d7fec8a71a'}))
+  .then(d => {
+    var cloudId = document.querySelector('meta[name="ajs-cloud-id"]')?.content || '';
+    return JSON.stringify({title: d.title, referenceId: d.referenceId, cloudId: cloudId});
+  })
 ```
 
-Extract: `title`, `referenceId`.
+**Important:** `cloudId` is extracted from the page's meta tag — NOT hardcoded. Chrome must be on the target Confluence domain for relative URLs to work.
 
-**Note:** cloudId for Larixon is `129eb80d-7ac7-4c64-8246-d7d7fec8a71a`.
+Extract: `title`, `referenceId`, `cloudId`.
 
 ## Phase 3: Get Canvas Token
 
@@ -137,11 +151,13 @@ Save the token — it's valid for ~15 minutes.
 
 **Fetch (headless via Bash):**
 
+The site URL and cloudId are derived from Phase 1 and Phase 2 — never hardcoded.
+
 ```bash
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 curl -s \
   -H "X-Access-Token: {TOKEN}" \
-  "https://larixon.atlassian.net/gateway/api/canvas/api/_internal/collab/ari%3Acloud%3Acanvas%3A{CLOUD_ID}%3Adatabase%2F{REFERENCE_ID}?skipSteps=true&v=2" \
+  "https://{SITE}.atlassian.net/gateway/api/canvas/api/_internal/collab/ari%3Acloud%3Acanvas%3A{CLOUD_ID}%3Adatabase%2F{REFERENCE_ID}?skipSteps=true&v=2" \
   -o /tmp/cfdb_{CONTENT_ID}.bin
 ```
 
@@ -166,7 +182,11 @@ function resolveCell(colDef, cell) {
     case 's': return Array.isArray(cell.v) ? cell.v.map(id => (colDef.sso||[]).find(o=>o.i===id)?.l||id).join(', ') : cell.v;
     case 'h': return Array.isArray(cell.v) ? cell.v.map(l => (colDef.sso||[]).find(o=>o.i===l.i)?.l||(l.u||l.i)).join(', ') : cell.v;
     case 'u': return Array.isArray(cell.v) ? cell.v.map(u => u.a||u.i||'').join(', ') : cell.v;
-    default: return typeof cell.v === 'object' ? JSON.stringify(cell.v) : (cell.v ?? '');
+    case 'n': return cell.v;
+    case 'd': return cell.v;
+    default:
+      process.stderr.write('WARN: unknown field type ' + cell.t + ' in column ' + (colDef?.n||'?') + '\n');
+      return typeof cell.v === 'object' ? JSON.stringify(cell.v) : (cell.v ?? '');
   }
 }
 
@@ -193,12 +213,17 @@ console.log(JSON.stringify({
 
 ## Phase 5: Resolve User Names
 
-If `accountIdsToResolve` is non-empty, resolve each via MCP Atlassian:
+If `accountIdsToResolve` is non-empty, resolve display names via Chrome MCP:
 
 ```
-Tool: lookupJiraAccountId
-Input: { cloudId: "{site}.atlassian.net", searchString: "{accountId}" }
+Tool: Control Chrome → execute_javascript
+Code:
+  fetch('/wiki/rest/api/user?accountId={accountId}', {credentials:'include'})
+  .then(r => r.json())
+  .then(d => d.displayName)
 ```
+
+Batch all unique account IDs. If Atlassian MCP is available, `lookupJiraAccountId` can also be used as a fallback (search by account ID string).
 
 Replace account IDs in rows with display names.
 
@@ -224,6 +249,7 @@ Format as a markdown table for the user:
 | Yjs decode fails | Verify binary file, not JSON error |
 | Chrome MCP unavailable | Cannot proceed — tell user to connect Chrome |
 | Empty rows/columns | Database may be empty — confirm with user |
+| Unknown field type | Log warning, return raw value |
 
 ## Anti-Hallucination Baseline
 
@@ -231,6 +257,7 @@ Format as a markdown table for the user:
 2. Verify data by comparing row count and column names after decode.
 3. If Yjs schema changes (new field types), warn user and return raw values.
 4. Do not guess user display names — always resolve via API.
+5. Do not execute destructive actions without explicit user confirmation.
 
 ## Handoff Contract
 
@@ -240,6 +267,7 @@ Handoff:
 - Scope: {rowCount} rows × {columnCount} columns extracted
 - Artifacts: /tmp/cfdb_{contentId}.bin (Yjs binary), parsed JSON
 - Decisions: Method A (API Pipeline) used
+- Validation: Row count and column names verified against metadata
 - Risks: Canvas token expires in ~15 min
 - Next command: N/A
 ```
