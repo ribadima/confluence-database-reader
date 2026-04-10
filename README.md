@@ -31,14 +31,18 @@ Then invoke:
 
 ## Prerequisites
 
-| Tool | Required | Purpose |
-| --- | --- | --- |
-| Chrome MCP (Control Chrome) | Yes | Canvas token (session cookies) |
-| Atlassian MCP | Optional | User name resolution |
-| Node.js | Yes | Yjs CRDT decode |
-| yjs npm package | Yes (auto-installed) | Decode library |
+Works with **any Confluence Cloud** instance. The skill runs onboarding on first use — checks everything and guides you through setup.
 
-The skill checks prerequisites on first run and auto-fixes what it can (e.g., installs `yjs`).
+**Auto-handled (skill checks and fixes):**
+- **Node.js** — onboarding detects, suggests `brew install node`
+- **yjs** — auto-installs via `npm install yjs`
+
+**You need beforehand:**
+- **Chrome MCP** ([Control Chrome](https://chromewebstore.google.com/detail/control-chrome-mcp-server/lhoefnbcfegijhgmgbdaingbhbclhgab) or [Claude in Chrome](https://chromewebstore.google.com/detail/claude-in-chrome/jjddolbgeaodckkcjakddoekmmknokpb)) — browser extension must be installed and connected
+- **Logged into Confluence** in Chrome — the skill needs your browser session to obtain a Canvas API token
+
+**Optional:**
+- **Atlassian MCP** — for resolving user display names. Without it, person fields return account IDs instead of names
 
 ## Supported Field Types
 
