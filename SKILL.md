@@ -45,7 +45,7 @@ No Node.js or yjs installation needed — Yjs loads from CDN inside Chrome.
 | Input | How |
 |-------|-----|
 | `https://{site}.atlassian.net/wiki/spaces/{key}/database/{id}` | Parse directly |
-| `https://{site}.atlassian.net/wiki/x/{tinyId}` | `open_url` → read `window.location.href` |
+| `https://{site}.atlassian.net/wiki/x/{tinyId}` | Resolve inside Phase 2 JS via `fetch(url, {redirect:'follow'}).then(r => r.url.match(/database\/(\d+)/)[1])` — no new tabs |
 | Numeric ID | Direct use, resolve site via Atlassian MCP |
 | Database name | CQL: `type = "database" AND title = "{name}"` |
 
@@ -53,10 +53,17 @@ No Node.js or yjs installation needed — Yjs loads from CDN inside Chrome.
 
 ## Phase 2: Read Database (ONE Chrome call)
 
-Single `execute_javascript` that does everything: REST metadata → GraphQL canvasToken → Canvas binary fetch → Yjs decode from CDN → user name resolution → JSON result.
+Single `execute_javascript` that does everything in the current tab — **never opens new tabs**.
+
+For tiny URLs, resolve the contentId inside the same JS via `fetch(url, {redirect:'follow'})`.
+
+For multiple tables, pass an array of IDs and use `Promise.all`.
 
 ```javascript
 (async () => {
+  // For tiny URLs: resolve first (no new tab)
+  // let cid = await fetch('{TINY_URL}', {credentials:'include', redirect:'follow'})
+  //   .then(r => r.url.match(/database\/(\d+)/)?.[1]);
   const cid = '{CONTENT_ID}';
 
   // Step 1: Metadata + Token (parallel)
@@ -144,7 +151,10 @@ Parse JSON → output as markdown table.
 | Scenario | Tool calls |
 |----------|-----------|
 | Standard URL | **2**: Chrome(execute all) → Chrome(read title) |
-| Tiny URL | **3**: Chrome(open_url) → Chrome(execute all) → Chrome(read title) |
+| Tiny URL | **2**: Chrome(execute all with resolve) → Chrome(read title) |
+| Multiple tables | **2**: Chrome(execute all in batch) → Chrome(read title) |
+
+**Never open new tabs.** Tiny URLs are resolved via `fetch(url, {redirect:'follow'})` inside the same JS. Multiple tables are batched in a single `Promise.all`.
 
 ## Output Format
 
