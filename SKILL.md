@@ -30,7 +30,7 @@ Do NOT launch full workflow. Respond with 4-8 bullets:
 
 Example commands:
 - `/confluence-database https://site.atlassian.net/wiki/spaces/XX/database/123456`
-- `/confluence-database 4307910658`
+- `/confluence-database 1234567890`
 - `/confluence-database Members · DS`
 
 ## Phase 0: Onboarding
@@ -100,7 +100,7 @@ Extract `contentId` and `site` from user input:
 | --- | --- |
 | `https://{site}.atlassian.net/wiki/spaces/{key}/database/{id}` | `site` and `{id}` from URL |
 | `https://{site}.atlassian.net/wiki/x/{tinyId}` | `site` from URL, resolve ID via CQL |
-| Numeric ID (e.g. `4307976195`) | Direct use, ask user for site if unknown |
+| Numeric ID (e.g. `1234567890`) | Direct use, ask user for site if unknown |
 | Database name (e.g. "Members · DS") | Search via CQL: `type = "database" AND title = "{name}"` |
 
 If `site` is not provided, resolve via Atlassian MCP `getAccessibleAtlassianResources`.
